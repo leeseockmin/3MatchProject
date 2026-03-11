@@ -1,0 +1,48 @@
+# Unity generated
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+[Uu]ser[Ss]ettings/
+[Mm]emoryCaptures/
+[Rr]ecords/
+
+# Unity caches and generated files
+Assets/AssetStoreTools*
+Assets/StreamingAssets/aa.meta
+Assets/StreamingAssets/aa/*
+Packages/packages-lock.json.meta
+
+# IDE and OS files
+.vs/
+.idea/
+.vscode/
+*.csproj
+*.unityproj
+*.sln
+*.suo
+*.tmp
+*.user
+*.userprefs
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Hidden local agent/workflow directories
+.agent-agents/
+.agent-skills/
+.omc/
+
+# Local environment files
+.env
+.env.*
+
