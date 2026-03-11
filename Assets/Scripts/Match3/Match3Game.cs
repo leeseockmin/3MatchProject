@@ -8,8 +8,8 @@ namespace ThreeMatch
     {
         private static readonly Color SpecialTileBaseColor = new(0.78f, 0.82f, 0.9f);
 
-        [SerializeField] private int width = 8;
-        [SerializeField] private int height = 8;
+        [SerializeField] private int width = 9;
+        [SerializeField] private int height = 9;
         [SerializeField] private float tileSize = 1f;
         [SerializeField] private float specialEffectDelay = 1f;
         [SerializeField] private float colorLinePreviewDuration = 2f;
@@ -55,6 +55,7 @@ namespace ThreeMatch
             _icons[SpecialTileType.ColorClear] = LoadOrBuildIcon("Match3Icons/icon_match3_colorclear_64", BuildColorClearIcon);
             _icons[SpecialTileType.RowClear] = LoadOrBuildIcon("Match3Icons/icon_match3_rowclear_64", BuildRowClearIcon);
             _icons[SpecialTileType.ColumnClear] = LoadOrBuildIcon("Match3Icons/icon_match3_columnclear_64", BuildColumnClearIcon);
+            _icons[SpecialTileType.Bomb] = BuildBombIcon();
 
             _tileRoot = new GameObject("TileRoot").transform;
             _tileRoot.SetParent(transform, false);
@@ -384,6 +385,16 @@ namespace ThreeMatch
                 return BuildColorClearFusion(result, aPos, a, bPos, b);
             }
 
+            if (ContainsBomb(a, b))
+            {
+                if (IsLineSpecial(a.Special) || IsLineSpecial(b.Special))
+                {
+                    return BuildBombLineFusion(result, aPos, a, bPos, b);
+                }
+
+                return BuildBombFusion(result, aPos, bPos);
+            }
+
             return BuildLineFusion(result, aPos, a, bPos, b);
         }
 
@@ -392,22 +403,11 @@ namespace ThreeMatch
             TileData other = a.Special == SpecialTileType.ColorClear ? b : a;
             TileColor targetColor = GetRandomBoardColor();
             HashSet<Vector2Int> sourceCells = CollectTilesOfColor(targetColor);
-
-            if (IsLineSpecial(other.Special))
-            {
-                AddLineEffectToColor(result.Cells, sourceCells, other.Special);
-                CopyCells(sourceCells, result.PreviewCells);
-                result.PreviewSpecial = other.Special;
-                result.PreviewDuration = colorLinePreviewDuration;
-                result.Label = other.Special == SpecialTileType.RowClear ? "Color Row Storm" : "Color Column Storm";
-            }
-            else
-            {
-                CopyCells(sourceCells, result.Cells);
-                AddCross(result.Cells, aPos);
-                AddCross(result.Cells, bPos);
-                result.Label = "Color Fusion";
-            }
+            ApplySpecialEffectToCells(result.Cells, sourceCells, other.Special);
+            CopyCells(sourceCells, result.PreviewCells);
+            result.PreviewSpecial = other.Special;
+            result.PreviewDuration = colorLinePreviewDuration;
+            result.Label = $"Color {LabelFor(other.Special)}";
 
             result.Cells.Add(aPos);
             result.Cells.Add(bPos);
@@ -427,6 +427,29 @@ namespace ThreeMatch
             return result;
         }
 
+        private ActivationResult BuildBombFusion(ActivationResult result, Vector2Int aPos, Vector2Int bPos)
+        {
+            AddBombArea(result.Cells, aPos);
+            AddBombArea(result.Cells, bPos);
+            result.Cells.Add(aPos);
+            result.Cells.Add(bPos);
+            SuppressSpecial(result, aPos, bPos);
+            result.Label = "Bomb Burst";
+            return result;
+        }
+
+        private ActivationResult BuildBombLineFusion(ActivationResult result, Vector2Int aPos, TileData a, Vector2Int bPos, TileData b)
+        {
+            Vector2Int fusionCenter = bPos;
+            SpecialTileType lineType = a.Special == SpecialTileType.Bomb ? b.Special : a.Special;
+            AddWideLine(result.Cells, fusionCenter, lineType, 1);
+            result.Cells.Add(aPos);
+            result.Cells.Add(bPos);
+            SuppressSpecial(result, aPos, bPos);
+            result.Label = "Bomb Line Burst";
+            return result;
+        }
+
         private void SuppressSpecial(ActivationResult result, params Vector2Int[] positions)
         {
             foreach (Vector2Int position in positions)
@@ -440,6 +463,7 @@ namespace ThreeMatch
             List<MatchPattern> patterns = new();
             CollectRunPatterns(patterns, true, swapA, swapB);
             CollectRunPatterns(patterns, false, swapA, swapB);
+            PromoteBombPatterns(patterns, swapA, swapB);
             CollectSquarePatterns(patterns);
             return patterns;
         }
@@ -519,6 +543,9 @@ namespace ThreeMatch
                 pattern.Cells.Add(horizontal ? new Vector2Int(i, fixedAxis) : new Vector2Int(fixedAxis, i));
             }
 
+            pattern.IsRunPattern = true;
+            pattern.IsHorizontalRun = horizontal;
+
             if (length >= 5)
             {
                 pattern.SpawnSpecial = SpecialTileType.ColorClear;
@@ -532,6 +559,47 @@ namespace ThreeMatch
 
             pattern.SpawnCell = ChooseSpawnCell(pattern.Cells, swapA, swapB);
             patterns.Add(pattern);
+        }
+
+        private void PromoteBombPatterns(List<MatchPattern> patterns, Vector2Int swapA, Vector2Int swapB)
+        {
+            List<MatchPattern> bombPatterns = new();
+            HashSet<string> signatures = new();
+
+            for (int i = 0; i < patterns.Count; i++)
+            {
+                MatchPattern a = patterns[i];
+                if (!a.IsRunPattern) continue;
+
+                for (int j = i + 1; j < patterns.Count; j++)
+                {
+                    MatchPattern b = patterns[j];
+                    if (!b.IsRunPattern || a.IsHorizontalRun == b.IsHorizontalRun) continue;
+
+                    HashSet<Vector2Int> overlap = new();
+                    foreach (Vector2Int cell in a.Cells)
+                    {
+                        if (b.Cells.Contains(cell)) overlap.Add(cell);
+                    }
+
+                    if (overlap.Count == 0) continue;
+
+                    MatchPattern bomb = new();
+                    CopyCells(a.Cells, bomb.Cells);
+                    CopyCells(b.Cells, bomb.Cells);
+                    bomb.SpawnSpecial = SpecialTileType.Bomb;
+                    bomb.Priority = 4;
+                    bomb.SpawnCell = ChooseBombSpawnCell(bomb.Cells, overlap, swapA, swapB);
+
+                    string signature = $"{bomb.SpawnCell.x},{bomb.SpawnCell.y}:{bomb.Cells.Count}";
+                    if (signatures.Add(signature))
+                    {
+                        bombPatterns.Add(bomb);
+                    }
+                }
+            }
+
+            patterns.AddRange(bombPatterns);
         }
 
         private static HashSet<Vector2Int> BuildClearSet(List<MatchPattern> patterns)
@@ -568,6 +636,9 @@ namespace ThreeMatch
                     break;
                 case SpecialTileType.ColumnClear:
                     AddColumn(clearSet, origin.x);
+                    break;
+                case SpecialTileType.Bomb:
+                    AddBombArea(clearSet, origin);
                     break;
             }
         }
@@ -617,6 +688,33 @@ namespace ThreeMatch
         private void AddTilesOfColor(HashSet<Vector2Int> clearSet, TileColor color)
         {
             CopyCells(CollectTilesOfColor(color), clearSet);
+        }
+
+        private void ApplySpecialEffectToCells(HashSet<Vector2Int> clearSet, HashSet<Vector2Int> sourceCells, SpecialTileType specialType)
+        {
+            foreach (Vector2Int cell in sourceCells)
+            {
+                ApplySpecialEffectAt(clearSet, cell, specialType);
+            }
+        }
+
+        private void ApplySpecialEffectAt(HashSet<Vector2Int> clearSet, Vector2Int origin, SpecialTileType specialType)
+        {
+            switch (specialType)
+            {
+                case SpecialTileType.RowClear:
+                    AddRow(clearSet, origin.y);
+                    break;
+                case SpecialTileType.ColumnClear:
+                    AddColumn(clearSet, origin.x);
+                    break;
+                case SpecialTileType.Bomb:
+                    AddBombArea(clearSet, origin);
+                    break;
+                default:
+                    clearSet.Add(origin);
+                    break;
+            }
         }
 
         private void AddLineEffectToColor(HashSet<Vector2Int> clearSet, TileColor color, SpecialTileType lineType)
@@ -680,6 +778,61 @@ namespace ThreeMatch
         {
             AddRow(clearSet, center.y);
             AddColumn(clearSet, center.x);
+        }
+
+        private void AddWideCross(HashSet<Vector2Int> clearSet, Vector2Int center, int radius)
+        {
+            for (int offset = -radius; offset <= radius; offset++)
+            {
+                int row = center.y + offset;
+                int col = center.x + offset;
+
+                if (row >= 0 && row < height)
+                {
+                    AddRow(clearSet, row);
+                }
+
+                if (col >= 0 && col < width)
+                {
+                    AddColumn(clearSet, col);
+                }
+            }
+        }
+
+        private void AddWideLine(HashSet<Vector2Int> clearSet, Vector2Int center, SpecialTileType lineType, int radius)
+        {
+            for (int offset = -radius; offset <= radius; offset++)
+            {
+                if (lineType == SpecialTileType.RowClear)
+                {
+                    int row = center.y + offset;
+                    if (row >= 0 && row < height)
+                    {
+                        AddRow(clearSet, row);
+                    }
+                }
+                else if (lineType == SpecialTileType.ColumnClear)
+                {
+                    int col = center.x + offset;
+                    if (col >= 0 && col < width)
+                    {
+                        AddColumn(clearSet, col);
+                    }
+                }
+            }
+        }
+
+        private void AddBombArea(HashSet<Vector2Int> clearSet, Vector2Int center)
+        {
+            for (int x = center.x - 1; x <= center.x + 1; x++)
+            {
+                for (int y = center.y - 1; y <= center.y + 1; y++)
+                {
+                    if (x < 0 || x >= width || y < 0 || y >= height) continue;
+                    if (_views[x, y] == null) continue;
+                    clearSet.Add(new Vector2Int(x, y));
+                }
+            }
         }
 
         private bool HasNormalTile(Vector2Int cell)
@@ -1120,6 +1273,11 @@ namespace ThreeMatch
             return a.Special == SpecialTileType.ColorClear || b.Special == SpecialTileType.ColorClear;
         }
 
+        private static bool ContainsBomb(TileData a, TileData b)
+        {
+            return a.Special == SpecialTileType.Bomb || b.Special == SpecialTileType.Bomb;
+        }
+
         private static bool IsLineSpecial(SpecialTileType special)
         {
             return special == SpecialTileType.RowClear || special == SpecialTileType.ColumnClear;
@@ -1133,6 +1291,14 @@ namespace ThreeMatch
             return new Vector2Int(-1, -1);
         }
 
+        private static Vector2Int ChooseBombSpawnCell(HashSet<Vector2Int> cells, HashSet<Vector2Int> overlap, Vector2Int swapA, Vector2Int swapB)
+        {
+            if (overlap.Contains(swapB)) return swapB;
+            if (overlap.Contains(swapA)) return swapA;
+            foreach (Vector2Int cell in overlap) return cell;
+            return ChooseSpawnCell(cells, swapA, swapB);
+        }
+
         private static string LabelFor(SpecialTileType special)
         {
             return special switch
@@ -1140,6 +1306,7 @@ namespace ThreeMatch
                 SpecialTileType.ColorClear => "Color Burst",
                 SpecialTileType.RowClear => "Row Blast",
                 SpecialTileType.ColumnClear => "Column Blast",
+                SpecialTileType.Bomb => "Bomb Blast",
                 _ => "Match"
             };
         }
@@ -1194,6 +1361,20 @@ namespace ThreeMatch
 
         private static Sprite BuildRowClearIcon() => BuildIconSprite((x, y, size) => Mathf.Abs(y - size / 2) <= size / 6);
         private static Sprite BuildColumnClearIcon() => BuildIconSprite((x, y, size) => Mathf.Abs(x - size / 2) <= size / 6);
+        private static Sprite BuildBombIcon()
+        {
+            return BuildIconSprite((x, y, size) =>
+            {
+                int c = size / 2;
+                int dx = x - c;
+                int dy = y - c;
+                int d = dx * dx + dy * dy;
+                int r = Mathf.RoundToInt(size * 0.22f);
+                bool core = d <= r * r;
+                bool spark = Mathf.Abs(dx) <= 1 || Mathf.Abs(dy) <= 1 || Mathf.Abs(dx - dy) <= 1 || Mathf.Abs(dx + dy) <= 1;
+                return core || spark;
+            });
+        }
 
         private static Sprite BuildColorClearIcon()
         {

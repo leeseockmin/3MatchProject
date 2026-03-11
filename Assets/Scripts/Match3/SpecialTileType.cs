@@ -5,6 +5,7 @@ namespace ThreeMatch
         None,
         ColorClear,
         RowClear,
-        ColumnClear
+        ColumnClear,
+        Bomb
     }
 }
