@@ -526,7 +526,7 @@ namespace ThreeMatch
             }
             else if (length == 4)
             {
-                pattern.SpawnSpecial = horizontal ? SpecialTileType.RowClear : SpecialTileType.ColumnClear;
+                pattern.SpawnSpecial = DetermineLineSpawnSpecial(horizontal, swapA, swapB);
                 pattern.Priority = 2;
             }
 
@@ -1097,6 +1097,17 @@ namespace ThreeMatch
         {
             return (a == SpecialTileType.RowClear && b == SpecialTileType.ColumnClear) ||
                    (a == SpecialTileType.ColumnClear && b == SpecialTileType.RowClear);
+        }
+
+        private static SpecialTileType DetermineLineSpawnSpecial(bool horizontalMatch, Vector2Int swapA, Vector2Int swapB)
+        {
+            if (AreAdjacent(swapA, swapB))
+            {
+                bool verticalSwap = swapA.x == swapB.x;
+                return verticalSwap ? SpecialTileType.ColumnClear : SpecialTileType.RowClear;
+            }
+
+            return horizontalMatch ? SpecialTileType.RowClear : SpecialTileType.ColumnClear;
         }
 
         private static bool AreDoubleColorClear(TileData a, TileData b)
