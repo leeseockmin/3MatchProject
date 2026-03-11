@@ -4,46 +4,6 @@ using UnityEngine;
 
 namespace ThreeMatch
 {
-    public enum TileColor { Blue, Red, Green, Yellow }
-    public enum SpecialTileType { None, ColorClear, RowClear, ColumnClear }
-
-    public struct TileData
-    {
-        public TileColor Color;
-        public SpecialTileType Special;
-
-        public TileData(TileColor color, SpecialTileType special = SpecialTileType.None)
-        {
-            Color = color;
-            Special = special;
-        }
-    }
-
-    internal sealed class MatchPattern
-    {
-        public HashSet<Vector2Int> Cells { get; } = new();
-        public SpecialTileType SpawnSpecial { get; set; }
-        public Vector2Int SpawnCell { get; set; } = new(-1, -1);
-        public int Priority { get; set; }
-    }
-
-    internal sealed class ActivationResult
-    {
-        public HashSet<Vector2Int> Cells { get; } = new();
-        public List<Vector3> Origins { get; } = new();
-        public int Multiplier { get; set; } = 1;
-        public string Label { get; set; } = "Match";
-    }
-
-    internal sealed class ComboPopup
-    {
-        public string Text { get; set; } = string.Empty;
-        public Vector3 WorldPosition { get; set; }
-        public Color Color { get; set; } = Color.white;
-        public float Lifetime { get; set; } = 0.85f;
-        public float Age { get; set; }
-    }
-
     public sealed class Match3Game : MonoBehaviour
     {
         private static readonly Color SpecialTileBaseColor = new(0.78f, 0.82f, 0.9f);
@@ -52,6 +12,7 @@ namespace ThreeMatch
         [SerializeField] private int height = 8;
         [SerializeField] private float tileSize = 1f;
         [SerializeField] private float specialEffectDelay = 1f;
+        [SerializeField] private float colorLinePreviewDuration = 2f;
         [SerializeField] private float comboPopupLifetime = 0.9f;
         [SerializeField] private Vector3 comboPopupOffset = new(0f, 0.65f, 0f);
         [SerializeField] private AudioClip swapClip;
@@ -155,7 +116,7 @@ namespace ThreeMatch
             ActivationResult activation = BuildActivation(aPos, bPos);
             if (activation.Cells.Count > 0)
             {
-                yield return ResolveBoard(activation.Cells, null, activation.Multiplier, activation.Origins, activation.Label, true);
+                yield return ResolveBoard(activation.Cells, null, activation.Multiplier, activation.Origins, activation.Label, true, activation.SuppressedSpecials, activation.PreviewCells, activation.PreviewSpecial, activation.PreviewDuration);
                 _isBusy = false;
                 yield break;
             }
@@ -190,7 +151,7 @@ namespace ThreeMatch
             if (activation.Cells.Count > 0)
             {
                 TriggerSound(specialClip);
-                yield return ResolveBoard(activation.Cells, null, activation.Multiplier, activation.Origins, activation.Label, true);
+                yield return ResolveBoard(activation.Cells, null, activation.Multiplier, activation.Origins, activation.Label, true, activation.SuppressedSpecials, activation.PreviewCells, activation.PreviewSpecial, activation.PreviewDuration);
             }
 
             _isBusy = false;
@@ -266,7 +227,7 @@ namespace ThreeMatch
             return hit.collider && hit.collider.TryGetComponent(out tile);
         }
 
-        private IEnumerator ResolveBoard(HashSet<Vector2Int> initialClear, MatchPattern spawn, int baseMultiplier, List<Vector3> origins, string label, bool specialStart)
+        private IEnumerator ResolveBoard(HashSet<Vector2Int> initialClear, MatchPattern spawn, int baseMultiplier, List<Vector3> origins, string label, bool specialStart, HashSet<Vector2Int> suppressedSpecials = null, HashSet<Vector2Int> previewCells = null, SpecialTileType previewSpecial = SpecialTileType.None, float previewDuration = 0f)
         {
             HashSet<Vector2Int> clearSet = initialClear;
             MatchPattern currentSpawn = spawn;
@@ -275,54 +236,91 @@ namespace ThreeMatch
             while (clearSet.Count > 0)
             {
                 int multiplier = Mathf.Max(1, baseMultiplier + chain);
-                _displayMultiplier = multiplier;
-                _effectLabel = chain == 0 ? label : $"Cascade x{multiplier}";
-                _comboStatus = multiplier > 1 ? $"Combo x{multiplier}" : "Single Match";
-
-                ExpandTriggeredSpecials(clearSet);
-
-                if (currentSpawn != null && clearSet.Contains(currentSpawn.SpawnCell))
-                {
-                    clearSet.Remove(currentSpawn.SpawnCell);
-                }
-
-                if (specialStart && chain == 0)
-                {
-                    TriggerSound(specialClip);
-                    yield return PlaySpecialEffect(clearSet, origins, specialEffectDelay);
-                }
-
-                _score += clearSet.Count * 10 * multiplier;
-                TriggerSound(multiplier > 1 ? comboClip : matchClip);
-                ShowComboPopup(multiplier, clearSet, label, chain);
-
-                foreach (Vector2Int cell in clearSet)
-                {
-                    SpawnBurst(GridToWorld(cell.x, cell.y), ToUnityColor(_board[cell.x, cell.y].Color), 0.45f);
-                    RemoveCell(cell);
-                }
-
-                if (currentSpawn != null && currentSpawn.SpawnSpecial != SpecialTileType.None)
-                {
-                    TileData tile = _board[currentSpawn.SpawnCell.x, currentSpawn.SpawnCell.y];
-                    tile.Special = currentSpawn.SpawnSpecial;
-                    _board[currentSpawn.SpawnCell.x, currentSpawn.SpawnCell.y] = tile;
-                    RefreshTileVisual(_views[currentSpawn.SpawnCell.x, currentSpawn.SpawnCell.y], tile);
-                    SpawnBurst(GridToWorld(currentSpawn.SpawnCell.x, currentSpawn.SpawnCell.y), Color.white, 0.35f);
-                }
-
-                yield return new WaitForSeconds(0.12f);
-                CollapseColumns();
-                RefillColumns();
-                yield return new WaitForSeconds(0.12f);
-
-                List<MatchPattern> next = FindMatchPatterns(new Vector2Int(-1, -1), new Vector2Int(-1, -1));
-                clearSet = BuildClearSet(next);
-                currentSpawn = ChooseSpawn(next);
+                UpdateResolutionStatus(multiplier, chain, label);
+                PrepareClearSet(clearSet, currentSpawn, suppressedSpecials);
+                yield return RunClearPhase(clearSet, multiplier, origins, label, chain, specialStart, previewCells, previewSpecial, previewDuration);
+                ApplySpawnSpecial(currentSpawn);
+                yield return RunBoardRefillPhase();
+                (clearSet, currentSpawn) = FindNextCascadeState();
                 chain++;
                 specialStart = false;
+                suppressedSpecials = null;
+                previewCells = null;
+                previewSpecial = SpecialTileType.None;
+                previewDuration = 0f;
             }
 
+            ResetResolutionStatus();
+        }
+
+        private void UpdateResolutionStatus(int multiplier, int chain, string label)
+        {
+            _displayMultiplier = multiplier;
+            _effectLabel = chain == 0 ? label : $"Cascade x{multiplier}";
+            _comboStatus = multiplier > 1 ? $"Combo x{multiplier}" : "Single Match";
+        }
+
+        private void PrepareClearSet(HashSet<Vector2Int> clearSet, MatchPattern currentSpawn, HashSet<Vector2Int> suppressedSpecials)
+        {
+            ExpandTriggeredSpecials(clearSet, suppressedSpecials);
+
+            if (currentSpawn != null && clearSet.Contains(currentSpawn.SpawnCell))
+            {
+                clearSet.Remove(currentSpawn.SpawnCell);
+            }
+        }
+
+        private IEnumerator RunClearPhase(HashSet<Vector2Int> clearSet, int multiplier, List<Vector3> origins, string label, int chain, bool specialStart, HashSet<Vector2Int> previewCells, SpecialTileType previewSpecial, float previewDuration)
+        {
+            if (specialStart && chain == 0)
+            {
+                TriggerSound(specialClip);
+                yield return ShowPreviewIcons(previewCells, previewSpecial, previewDuration);
+                yield return PlaySpecialEffect(clearSet, origins, specialEffectDelay);
+            }
+
+            _score += clearSet.Count * 10 * multiplier;
+            TriggerSound(multiplier > 1 ? comboClip : matchClip);
+            ShowComboPopup(multiplier, clearSet, label, chain);
+            RemoveClearedCells(clearSet);
+        }
+
+        private void RemoveClearedCells(HashSet<Vector2Int> clearSet)
+        {
+            foreach (Vector2Int cell in clearSet)
+            {
+                SpawnBurst(GridToWorld(cell.x, cell.y), ToUnityColor(_board[cell.x, cell.y].Color), 0.45f);
+                RemoveCell(cell);
+            }
+        }
+
+        private void ApplySpawnSpecial(MatchPattern currentSpawn)
+        {
+            if (currentSpawn == null || currentSpawn.SpawnSpecial == SpecialTileType.None) return;
+
+            TileData tile = _board[currentSpawn.SpawnCell.x, currentSpawn.SpawnCell.y];
+            tile.Special = currentSpawn.SpawnSpecial;
+            _board[currentSpawn.SpawnCell.x, currentSpawn.SpawnCell.y] = tile;
+            RefreshTileVisual(_views[currentSpawn.SpawnCell.x, currentSpawn.SpawnCell.y], tile);
+            SpawnBurst(GridToWorld(currentSpawn.SpawnCell.x, currentSpawn.SpawnCell.y), Color.white, 0.35f);
+        }
+
+        private IEnumerator RunBoardRefillPhase()
+        {
+            yield return new WaitForSeconds(0.12f);
+            CollapseColumns();
+            RefillColumns();
+            yield return new WaitForSeconds(0.12f);
+        }
+
+        private (HashSet<Vector2Int> clearSet, MatchPattern spawn) FindNextCascadeState()
+        {
+            List<MatchPattern> next = FindMatchPatterns(new Vector2Int(-1, -1), new Vector2Int(-1, -1));
+            return (BuildClearSet(next), ChooseSpawn(next));
+        }
+
+        private void ResetResolutionStatus()
+        {
             _displayMultiplier = 1;
             _effectLabel = "Idle";
             _comboStatus = "Ready";
@@ -341,19 +339,9 @@ namespace ThreeMatch
             result.Origins.Add(GridToWorld(aPos.x, aPos.y));
             result.Origins.Add(GridToWorld(bPos.x, bPos.y));
 
-            if (aSpecial && bSpecial)
-            {
-                BuildFusion(result, aPos, a, bPos, b);
-                return result;
-            }
-
-            Vector2Int origin = aSpecial ? aPos : bPos;
-            TileData specialTile = aSpecial ? a : b;
-            TileColor targetColor = aSpecial ? b.Color : a.Color;
-            AddSpecialClear(result.Cells, origin, specialTile, targetColor);
-            result.Multiplier = 2;
-            result.Label = LabelFor(specialTile.Special);
-            return result;
+            return aSpecial && bSpecial
+                ? BuildFusionActivation(result, aPos, a, bPos, b)
+                : BuildSingleSpecialActivation(result, aSpecial ? aPos : bPos, aSpecial ? a : b, aSpecial ? b.Color : a.Color);
         }
 
         private ActivationResult BuildTapActivation(Vector2Int origin)
@@ -363,119 +351,161 @@ namespace ThreeMatch
             if (tile.Special == SpecialTileType.None) return result;
 
             result.Origins.Add(GridToWorld(origin.x, origin.y));
-            AddSpecialClear(result.Cells, origin, tile, GetRandomBoardColor());
+            ApplySpecialClear(result.Cells, origin, tile, GetRandomBoardColor());
+            SuppressSpecial(result, origin);
             result.Multiplier = tile.Special == SpecialTileType.ColorClear ? 3 : 2;
             result.Label = tile.Special == SpecialTileType.ColorClear ? "Random Color Burst" : LabelFor(tile.Special);
             return result;
         }
 
-        private void BuildFusion(ActivationResult result, Vector2Int aPos, TileData a, Vector2Int bPos, TileData b)
+        private ActivationResult BuildSingleSpecialActivation(ActivationResult result, Vector2Int origin, TileData specialTile, TileColor pairedColor)
+        {
+            ApplySpecialClear(result.Cells, origin, specialTile, pairedColor);
+            SuppressSpecial(result, origin);
+            result.Multiplier = 2;
+            result.Label = LabelFor(specialTile.Special);
+            return result;
+        }
+
+        private ActivationResult BuildFusionActivation(ActivationResult result, Vector2Int aPos, TileData a, Vector2Int bPos, TileData b)
         {
             result.Multiplier = 3;
-            if (a.Special == SpecialTileType.ColorClear && b.Special == SpecialTileType.ColorClear)
+
+            if (AreDoubleColorClear(a, b))
             {
                 AddAllCells(result.Cells);
                 result.Multiplier = 5;
                 result.Label = "Double Color Burst";
-                return;
+                return result;
             }
 
-            if (a.Special == SpecialTileType.ColorClear || b.Special == SpecialTileType.ColorClear)
+            if (ContainsColorClear(a, b))
             {
-                TileData other = a.Special == SpecialTileType.ColorClear ? b : a;
-                Vector2Int otherPos = a.Special == SpecialTileType.ColorClear ? bPos : aPos;
-                TileColor randomColor = GetRandomBoardColor();
-
-                if (other.Special == SpecialTileType.RowClear || other.Special == SpecialTileType.ColumnClear)
-                {
-                    AddLineEffectToColor(result.Cells, randomColor, other.Special);
-                    result.Label = other.Special == SpecialTileType.RowClear ? "Color Row Storm" : "Color Column Storm";
-                }
-                else
-                {
-                    AddTilesOfColor(result.Cells, randomColor);
-                    AddCross(result.Cells, aPos);
-                    AddCross(result.Cells, bPos);
-                    result.Label = "Color Fusion";
-                }
-
-                result.Cells.Add(aPos);
-                result.Cells.Add(bPos);
-                result.Cells.Add(otherPos);
-                result.Multiplier = 4;
-                return;
+                return BuildColorClearFusion(result, aPos, a, bPos, b);
             }
 
-            if (AreLinePair(a.Special, b.Special))
+            return BuildLineFusion(result, aPos, a, bPos, b);
+        }
+
+        private ActivationResult BuildColorClearFusion(ActivationResult result, Vector2Int aPos, TileData a, Vector2Int bPos, TileData b)
+        {
+            TileData other = a.Special == SpecialTileType.ColorClear ? b : a;
+            TileColor targetColor = GetRandomBoardColor();
+            HashSet<Vector2Int> sourceCells = CollectTilesOfColor(targetColor);
+
+            if (IsLineSpecial(other.Special))
             {
+                AddLineEffectToColor(result.Cells, sourceCells, other.Special);
+                CopyCells(sourceCells, result.PreviewCells);
+                result.PreviewSpecial = other.Special;
+                result.PreviewDuration = colorLinePreviewDuration;
+                result.Label = other.Special == SpecialTileType.RowClear ? "Color Row Storm" : "Color Column Storm";
+            }
+            else
+            {
+                CopyCells(sourceCells, result.Cells);
+                AddCross(result.Cells, aPos);
                 AddCross(result.Cells, bPos);
-                result.Label = "Cross Blast";
-                return;
+                result.Label = "Color Fusion";
             }
 
-            AddCross(result.Cells, aPos);
-            AddCross(result.Cells, bPos);
-            result.Label = "Line Fusion";
+            result.Cells.Add(aPos);
+            result.Cells.Add(bPos);
+            SuppressSpecial(result, aPos, bPos);
+            result.Multiplier = 4;
+            return result;
+        }
+
+        private ActivationResult BuildLineFusion(ActivationResult result, Vector2Int aPos, TileData a, Vector2Int bPos, TileData b)
+        {
+            Vector2Int fusionCenter = bPos;
+            AddCross(result.Cells, fusionCenter);
+            result.Cells.Add(aPos);
+            result.Cells.Add(bPos);
+            SuppressSpecial(result, aPos, bPos);
+            result.Label = AreLinePair(a.Special, b.Special) ? "Cross Blast" : "Line Fusion";
+            return result;
+        }
+
+        private void SuppressSpecial(ActivationResult result, params Vector2Int[] positions)
+        {
+            foreach (Vector2Int position in positions)
+            {
+                result.SuppressedSpecials.Add(position);
+            }
         }
 
         private List<MatchPattern> FindMatchPatterns(Vector2Int swapA, Vector2Int swapB)
         {
             List<MatchPattern> patterns = new();
+            CollectRunPatterns(patterns, true, swapA, swapB);
+            CollectRunPatterns(patterns, false, swapA, swapB);
+            CollectSquarePatterns(patterns);
+            return patterns;
+        }
 
-            for (int y = 0; y < height; y++)
+        private void CollectRunPatterns(List<MatchPattern> patterns, bool horizontal, Vector2Int swapA, Vector2Int swapB)
+        {
+            int primaryLimit = horizontal ? height : width;
+            int secondaryLimit = horizontal ? width : height;
+
+            for (int fixedAxis = 0; fixedAxis < primaryLimit; fixedAxis++)
             {
                 int runStart = 0;
-                for (int x = 1; x <= width; x++)
+                for (int offset = 1; offset <= secondaryLimit; offset++)
                 {
-                    bool same = x < width &&
-                                _board[x, y].Special == SpecialTileType.None &&
-                                _board[x - 1, y].Special == SpecialTileType.None &&
-                                _board[x, y].Color == _board[x - 1, y].Color;
+                    bool same = offset < secondaryLimit && AreRunNeighborsMatching(horizontal, fixedAxis, offset);
                     if (same) continue;
-                    AddRunPattern(patterns, runStart, x - 1, true, y, swapA, swapB);
-                    runStart = x;
+                    AddRunPattern(patterns, runStart, offset - 1, horizontal, fixedAxis, swapA, swapB);
+                    runStart = offset;
                 }
             }
+        }
 
-            for (int x = 0; x < width; x++)
-            {
-                int runStart = 0;
-                for (int y = 1; y <= height; y++)
-                {
-                    bool same = y < height &&
-                                _board[x, y].Special == SpecialTileType.None &&
-                                _board[x, y - 1].Special == SpecialTileType.None &&
-                                _board[x, y].Color == _board[x, y - 1].Color;
-                    if (same) continue;
-                    AddRunPattern(patterns, runStart, y - 1, false, x, swapA, swapB);
-                    runStart = y;
-                }
-            }
+        private bool AreRunNeighborsMatching(bool horizontal, int fixedAxis, int offset)
+        {
+            Vector2Int current = horizontal ? new Vector2Int(offset, fixedAxis) : new Vector2Int(fixedAxis, offset);
+            Vector2Int previous = horizontal ? new Vector2Int(offset - 1, fixedAxis) : new Vector2Int(fixedAxis, offset - 1);
+            return HasNormalTile(current) &&
+                   HasNormalTile(previous) &&
+                   _board[current.x, current.y].Color == _board[previous.x, previous.y].Color;
+        }
 
+        private void CollectSquarePatterns(List<MatchPattern> patterns)
+        {
             for (int x = 0; x < width - 1; x++)
             {
                 for (int y = 0; y < height - 1; y++)
                 {
-                    if (_board[x, y].Special != SpecialTileType.None ||
-                        _board[x + 1, y].Special != SpecialTileType.None ||
-                        _board[x, y + 1].Special != SpecialTileType.None ||
-                        _board[x + 1, y + 1].Special != SpecialTileType.None)
-                    {
-                        continue;
-                    }
-
-                    TileColor color = _board[x, y].Color;
-                    if (_board[x + 1, y].Color != color || _board[x, y + 1].Color != color || _board[x + 1, y + 1].Color != color) continue;
-                    MatchPattern square = new();
-                    square.Cells.Add(new Vector2Int(x, y));
-                    square.Cells.Add(new Vector2Int(x + 1, y));
-                    square.Cells.Add(new Vector2Int(x, y + 1));
-                    square.Cells.Add(new Vector2Int(x + 1, y + 1));
-                    patterns.Add(square);
+                    TryAddSquarePattern(patterns, x, y);
                 }
             }
+        }
 
-            return patterns;
+        private void TryAddSquarePattern(List<MatchPattern> patterns, int x, int y)
+        {
+            Vector2Int bottomLeft = new(x, y);
+            Vector2Int bottomRight = new(x + 1, y);
+            Vector2Int topLeft = new(x, y + 1);
+            Vector2Int topRight = new(x + 1, y + 1);
+
+            if (!HasNormalTile(bottomLeft) ||
+                !HasNormalTile(bottomRight) ||
+                !HasNormalTile(topLeft) ||
+                !HasNormalTile(topRight))
+            {
+                return;
+            }
+
+            TileColor color = _board[x, y].Color;
+            if (_board[x + 1, y].Color != color || _board[x, y + 1].Color != color || _board[x + 1, y + 1].Color != color) return;
+
+            MatchPattern square = new();
+            square.Cells.Add(bottomLeft);
+            square.Cells.Add(bottomRight);
+            square.Cells.Add(topLeft);
+            square.Cells.Add(topRight);
+            patterns.Add(square);
         }
 
         private void AddRunPattern(List<MatchPattern> patterns, int start, int end, bool horizontal, int fixedAxis, Vector2Int swapA, Vector2Int swapB)
@@ -525,7 +555,7 @@ namespace ThreeMatch
             return best;
         }
 
-        private void AddSpecialClear(HashSet<Vector2Int> clearSet, Vector2Int origin, TileData tile, TileColor pairedColor)
+        private void ApplySpecialClear(HashSet<Vector2Int> clearSet, Vector2Int origin, TileData tile, TileColor pairedColor)
         {
             switch (tile.Special)
             {
@@ -542,13 +572,14 @@ namespace ThreeMatch
             }
         }
 
-        private void ExpandTriggeredSpecials(HashSet<Vector2Int> clearSet)
+        private void ExpandTriggeredSpecials(HashSet<Vector2Int> clearSet, HashSet<Vector2Int> suppressedSpecials = null)
         {
             Queue<Vector2Int> pending = new();
             HashSet<Vector2Int> processed = new();
 
             foreach (Vector2Int cell in clearSet)
             {
+                if (suppressedSpecials != null && suppressedSpecials.Contains(cell)) continue;
                 if (HasSpecial(cell))
                 {
                     pending.Enqueue(cell);
@@ -563,10 +594,11 @@ namespace ThreeMatch
                 TileData tile = _board[origin.x, origin.y];
                 if (tile.Special == SpecialTileType.None) continue;
 
-                AddSpecialClear(clearSet, origin, tile, GetRandomBoardColor());
+                ApplySpecialClear(clearSet, origin, tile, GetRandomBoardColor());
 
                 foreach (Vector2Int cell in clearSet)
                 {
+                    if (suppressedSpecials != null && suppressedSpecials.Contains(cell)) continue;
                     if (!processed.Contains(cell) && HasSpecial(cell))
                     {
                         pending.Enqueue(cell);
@@ -584,35 +616,53 @@ namespace ThreeMatch
 
         private void AddTilesOfColor(HashSet<Vector2Int> clearSet, TileColor color)
         {
+            CopyCells(CollectTilesOfColor(color), clearSet);
+        }
+
+        private void AddLineEffectToColor(HashSet<Vector2Int> clearSet, TileColor color, SpecialTileType lineType)
+        {
+            AddLineEffectToColor(clearSet, CollectTilesOfColor(color), lineType);
+        }
+
+        private void AddLineEffectToColor(HashSet<Vector2Int> clearSet, HashSet<Vector2Int> sourceCells, SpecialTileType lineType)
+        {
+            foreach (Vector2Int cell in sourceCells)
+            {
+                ApplyLineClear(clearSet, cell, lineType);
+            }
+        }
+
+        private HashSet<Vector2Int> CollectTilesOfColor(TileColor color)
+        {
+            HashSet<Vector2Int> cells = new();
             for (int x = 0; x < width; x++)
             for (int y = 0; y < height; y++)
                 if (_views[x, y] != null &&
                     _board[x, y].Special == SpecialTileType.None &&
                     _board[x, y].Color == color)
                 {
-                    clearSet.Add(new Vector2Int(x, y));
+                    cells.Add(new Vector2Int(x, y));
                 }
+            return cells;
         }
 
-        private void AddLineEffectToColor(HashSet<Vector2Int> clearSet, TileColor color, SpecialTileType lineType)
+        private static void CopyCells(HashSet<Vector2Int> source, HashSet<Vector2Int> destination)
         {
-            for (int x = 0; x < width; x++)
+            foreach (Vector2Int cell in source)
             {
-                for (int y = 0; y < height; y++)
-                {
-                    if (_views[x, y] == null) continue;
-                    if (_board[x, y].Special != SpecialTileType.None) continue;
-                    if (_board[x, y].Color != color) continue;
+                destination.Add(cell);
+            }
+        }
 
-                    if (lineType == SpecialTileType.RowClear)
-                    {
-                        AddRow(clearSet, y);
-                    }
-                    else if (lineType == SpecialTileType.ColumnClear)
-                    {
-                        AddColumn(clearSet, x);
-                    }
-                }
+        private void ApplyLineClear(HashSet<Vector2Int> clearSet, Vector2Int origin, SpecialTileType lineType)
+        {
+            if (lineType == SpecialTileType.RowClear)
+            {
+                AddRow(clearSet, origin.y);
+            }
+            else if (lineType == SpecialTileType.ColumnClear)
+            {
+                AddColumn(clearSet, origin.x);
             }
         }
 
@@ -630,6 +680,11 @@ namespace ThreeMatch
         {
             AddRow(clearSet, center.y);
             AddColumn(clearSet, center.x);
+        }
+
+        private bool HasNormalTile(Vector2Int cell)
+        {
+            return _board[cell.x, cell.y].Special == SpecialTileType.None;
         }
 
         private bool HasSpecial(Vector2Int cell)
@@ -689,6 +744,29 @@ namespace ThreeMatch
             {
                 TileView view = _views[cell.x, cell.y];
                 if (view != null) view.SetPulse(0f);
+            }
+        }
+
+        private IEnumerator ShowPreviewIcons(HashSet<Vector2Int> previewCells, SpecialTileType previewSpecial, float duration)
+        {
+            if (previewCells == null || previewCells.Count == 0 || previewSpecial == SpecialTileType.None || duration <= 0f)
+            {
+                yield break;
+            }
+
+            Sprite icon = _icons[previewSpecial];
+            foreach (Vector2Int cell in previewCells)
+            {
+                TileView view = _views[cell.x, cell.y];
+                if (view != null) view.SetPreviewIcon(icon);
+            }
+
+            yield return new WaitForSeconds(duration);
+
+            foreach (Vector2Int cell in previewCells)
+            {
+                TileView view = _views[cell.x, cell.y];
+                if (view != null) view.RestoreAppliedIcon();
             }
         }
 
@@ -1021,6 +1099,21 @@ namespace ThreeMatch
                    (a == SpecialTileType.ColumnClear && b == SpecialTileType.RowClear);
         }
 
+        private static bool AreDoubleColorClear(TileData a, TileData b)
+        {
+            return a.Special == SpecialTileType.ColorClear && b.Special == SpecialTileType.ColorClear;
+        }
+
+        private static bool ContainsColorClear(TileData a, TileData b)
+        {
+            return a.Special == SpecialTileType.ColorClear || b.Special == SpecialTileType.ColorClear;
+        }
+
+        private static bool IsLineSpecial(SpecialTileType special)
+        {
+            return special == SpecialTileType.RowClear || special == SpecialTileType.ColumnClear;
+        }
+
         private static Vector2Int ChooseSpawnCell(HashSet<Vector2Int> cells, Vector2Int swapA, Vector2Int swapB)
         {
             if (cells.Contains(swapB)) return swapB;
@@ -1132,46 +1225,6 @@ namespace ThreeMatch
             texture.Apply();
             texture.filterMode = FilterMode.Point;
             return Sprite.Create(texture, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f), size);
-        }
-    }
-
-    public sealed class TileView : MonoBehaviour
-    {
-        private SpriteRenderer _renderer;
-        private SpriteRenderer _iconRenderer;
-        private Color _baseColor;
-
-        public Vector2Int GridPosition { get; private set; }
-
-        public void Initialize(SpriteRenderer renderer, SpriteRenderer iconRenderer)
-        {
-            _renderer = renderer;
-            _iconRenderer = iconRenderer;
-        }
-
-        public void SetGridPosition(Vector2Int position, Vector3 worldPosition)
-        {
-            GridPosition = position;
-            transform.position = worldPosition;
-        }
-
-        public void Apply(TileData tile, Color color, Sprite icon)
-        {
-            _baseColor = color;
-            _renderer.color = color;
-            _iconRenderer.sprite = icon;
-            _iconRenderer.enabled = icon != null;
-            _iconRenderer.color = Color.white;
-        }
-
-        public void SetSelected(bool selected)
-        {
-            _renderer.color = selected ? Color.white : _baseColor;
-        }
-
-        public void SetPulse(float amount)
-        {
-            _renderer.color = Color.Lerp(_baseColor, Color.white, Mathf.Clamp01(amount));
         }
     }
 }
