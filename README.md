@@ -4,7 +4,7 @@ Unity로 만든 3매치 퍼즐 프로토타입입니다. 씬에 별도 배치 �
 
 ## Screenshots
 
-https://github.com/user-attachments/assets/d52514c6-18d2-4f84-bb46-97accdfd9345
+https://github.com/user-attachments/assets/165b5c57-f72c-40db-bd03-54e039009b53
 
 ### Gameplay
 ![Gameplay](Assets/Screenshots/match3_gameplay.png)
@@ -18,6 +18,9 @@ https://github.com/user-attachments/assets/d52514c6-18d2-4f84-bb46-97accdfd9345
 - 점수, 콤보 배수, 이펙트 라벨이 화면 상단 HUD에 표시됩니다.
 
 ## Controls
+
+
+
 
 1. 마우스로 타일을 클릭한 뒤 인접한 타일 방향으로 드래그합니다.
 2. 특수 타일은 클릭만으로도 즉시 발동할 수 있습니다.
