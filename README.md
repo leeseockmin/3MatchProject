@@ -4,6 +4,8 @@ Unity로 만든 3매치 퍼즐 프로토타입입니다. 씬에 별도 배치 �
 
 ## Screenshots
 
+https://github.com/user-attachments/assets/d52514c6-18d2-4f84-bb46-97accdfd9345
+
 ### Gameplay
 ![Gameplay](Assets/Screenshots/match3_gameplay.png)
 
@@ -32,6 +34,9 @@ Unity로 만든 3매치 퍼즐 프로토타입입니다. 씬에 별도 배치 �
 
 ### ColumnClear
 - 생성: 4개 매치
+
+
+
 - 효과: 해당 열 전체 제거
 
 ### ColorClear
