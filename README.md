@@ -4,9 +4,6 @@ Unity로 만든 3매치 퍼즐 프로토타입입니다. 씬에 별도 배치 �
 
 ## Screenshots
 
-### Editor Overview
-![Editor overview](Assets/Screenshots/match3_overview.png)
-
 ### Gameplay
 ![Gameplay](Assets/Screenshots/match3_gameplay.png)
 
